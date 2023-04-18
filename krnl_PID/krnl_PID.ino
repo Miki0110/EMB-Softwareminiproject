@@ -1,16 +1,24 @@
 #include <krnl.h>
 #include <avr/wdt.h>
 
-#define ENCODER_PIN 2
-#define DIRECTION_PIN 9
-
-#define STK_SIZE 200
-
-#define pot A0 // potentiometer pin
+//// CONSTANTS //////
+#define ENCODER_PIN 2 // Quadratic pin 1
+#define DIRECTION_PIN 9 // Quadratic pin 2
 #define Mot1 10 // pwm Pin
 #define Mot2 12 //Direction of pin 1
+#define pot A0 // potentiometer pin
 
-#define BUFFER_SIZE 20
+#define STK_SIZE 200 // Stack size for the krnl
+#define BUFFER_SIZE 20 // Buffer size for the message buffer
+
+// PID values
+#define ENCODER_RESOLUTION 500
+#define PWM_TO_RPS_FACTOR 0.118
+#define INTEGRAL_MIN -1000
+#define INTEGRAL_MAX 1000
+#define POTEN_MAX 700
+
+/////////////////////
 
 // Krnl variables
 struct k_t *pt1, *pt2;
@@ -25,7 +33,7 @@ volatile int icnt = 0;
 
 unsigned long prevtime=0;
 float prev_e = 0;
-float prev_inte = 0;
+float integral_e = 0;
 float PID[3];
 // Buffer for the serial read
 char serialBuffer[32]; // Buffer for the serial message
@@ -87,7 +95,7 @@ void serialReaderTask() {
   while (1) {
     if (Serial.available()) { // If someone has written in the serial we read it
       char c = Serial.read();
-      if (c == '\n' || bufferIndex >= sizeof(serialBuffer) - 1) { // If we exceed the serial, or find a newline we start treating the data
+      if (c == '\n' || bufferIndex >= BUFFER_SIZE - 1) { // If we exceed the serial, or find a newline we start treating the data
         char* token = strtok(serialBuffer, ","); // Split the data by commas
         int j = 0;
         while (token != NULL) {
@@ -101,8 +109,8 @@ void serialReaderTask() {
         serialBuffer[bufferIndex++] = c;
       }
     }
-    // Not sure how much sleep this should have, any seems fine to me
-    k_sleep(300);
+    // Timing of readerTask is not important
+    k_sleep(1000);
   }
 }
 
@@ -111,7 +119,7 @@ void taskController(){
     while (1){
   PID_controller();
   // Wait sleep until next loop
-  k_sleep(100);
+  k_sleep(1); // minimum tickspeed and also close to the limits of the system
     }
 }
 
@@ -119,36 +127,32 @@ void taskController(){
 // Motor controller
 void PID_controller(){
   int potValue = analogRead(A0); // Read potentiometer value
-  int pwmOutput = map(potValue, 0, 700, 0 , 255); // Map the potentiometer value from 0 to 255
+  int pwmOutput = map(potValue, 0, POTEN_MAX, 0 , 255); // Map the potentiometer value from 0 to 255
 
-
-  float ref = pwmOutput*0.118; // RPmS
+  float ref = pwmOutput * PWM_TO_RPS_FACTOR;
   //Serial.println(ref);
   unsigned long dt = millis() - prevtime;
   prevtime = millis();
-  float vel = (float(icnt)/500) / (float(dt)/1000); // RPmS
+  // We could recieve the message here, but it's already accessible
+  float vel = (float(icnt) / ENCODER_RESOLUTION) / (float(dt) / 1000); // RPS
   
-  float error = ref-vel;// RPmS   (icnt*circum)/encResolution/(100/dt);
-
+  float error = ref-vel;// RPS   (icnt*circum)/encResolution/(100/dt);
   icnt = 0; // Reset the encoder counter
-    
+   
   float de=(error-prev_e)/dt;
  
-  //float integral_e = prev_inte + dt*(error+prev_e)/2;
-  
-  prev_e = error;
-  
-  
-  //Serial.println(integral_e);   
-  
+  integral_e += error * dt;
+  integral_e = constrain(integral_e, INTEGRAL_MIN, INTEGRAL_MAX); // stop clamping
+
   // Convert v_hat to PWM value
-  //(PID[0]*error+PID[1]*de+PID[2]*integral_e)
-  int pwm = (PID[0]*error+PID[1]*de)/0.118;
+  int pwm = (PID[0]*error+PID[1]*integral_e+PID[2]*de);
+  //int pwm = (PID[0]*error+PID[1]*de)/0.118;
   /*Serial.print("pwm: ");
   Serial.println(pwm);
   Serial.print("error: ");
   Serial.println(error); */
   set_motor_PWM(pwm);
+  prev_e = error;
 }
 
 void set_motor_PWM(int pwm){
@@ -186,8 +190,8 @@ void setup() {
   // init krnl
   k_init(2, 0, 1);
   // Initiate the tasks
-  pt1 = k_crt_task(taskController, 10, stak1, STK_SIZE); // Needs to be lower than the rest
-  pt2 = k_crt_task(serialReaderTask, 11, stak2, STK_SIZE); 
+  pt1 = k_crt_task(taskController, 11, stak1, STK_SIZE); 
+  pt2 = k_crt_task(serialReaderTask, 10, stak2, STK_SIZE); // Needs to be lower than the rest
   
   // Start the message
   pMsg = k_crt_send_Q(10, 2, mar);
@@ -203,7 +207,3 @@ void loop() {
   // Since we are using the krnl, we never loop
   Serial.println("Something is wrong");
 }
-
-
-
-
