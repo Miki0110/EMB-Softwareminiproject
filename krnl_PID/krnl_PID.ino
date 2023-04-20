@@ -9,7 +9,8 @@
 #define pot A0 // potentiometer pin
 
 #define STK_SIZE 200 // Stack size for the krnl
-#define BUFFER_SIZE 20 // Buffer size for the message buffer
+#define LOG_BUFFER_SIZE 100 // Buffer size for the LOG
+#define MSG_BUFFER_SIZE 20 // Buffer size for the message buffer
 
 // PID values
 #define ENCODER_RESOLUTION 500
@@ -21,12 +22,12 @@
 /////////////////////
 
 // Krnl variables
-struct k_t *pt1, *pt2;
+struct k_t *pt1, *pt2, *pt3;
 
-struct k_msg_t *pMsg;
-char mar[10 * 2];
+struct k_msg_t *pMsg1, *pMsg2;
+int mar1[2], mar2[2];
 
-char stak1[STK_SIZE], stak2[STK_SIZE];
+char stak1[STK_SIZE], stak2[STK_SIZE], stak3[STK_SIZE];;
 
 // Define global variables
 volatile int icnt = 0;
@@ -38,7 +39,6 @@ float PID[3];
 // Buffer for the serial read
 char serialBuffer[32]; // Buffer for the serial message
 volatile uint8_t bufferIndex = 0; // This indicates current position in the buffer
-
 
 // Encoder interrupt task
 #if defined (__AVR_ATmega2560__) || defined (__AVR_ATmega1280__)
@@ -57,8 +57,6 @@ ISR(INT0_vect, ISR_NAKED) {
   } else {
     icnt++;
   }
-  // Send the increment message
-  ki_send(pMsg, (void *)&icnt);
 
   K_CHG_STAK();
 
@@ -95,7 +93,7 @@ void serialReaderTask() {
   while (1) {
     if (Serial.available()) { // If someone has written in the serial we read it
       char c = Serial.read();
-      if (c == '\n' || bufferIndex >= BUFFER_SIZE - 1) { // If we exceed the serial, or find a newline we start treating the data
+      if (c == '\n' || bufferIndex >= MSG_BUFFER_SIZE - 1) { // If we exceed the serial, or find a newline we start treating the data
         char* token = strtok(serialBuffer, ","); // Split the data by commas
         int j = 0;
         while (token != NULL) {
@@ -110,17 +108,19 @@ void serialReaderTask() {
       }
     }
     // Timing of readerTask is not important
-    k_sleep(1000);
+    k_sleep(300);
   }
 }
 
 
 void taskController(){
-    while (1){
-  PID_controller();
-  // Wait sleep until next loop
-  k_sleep(1); // minimum tickspeed and also close to the limits of the system
-    }
+  // let krnl send a signal to the semaphore every 3 ticks
+  //k_set_sem_timer(s1, 100);
+  while (1){
+    //k_wait(s1, 0); // Wait sleep until next loop
+    PID_controller();
+    k_sleep(3);
+  }
 }
 
 
@@ -128,10 +128,15 @@ void taskController(){
 void PID_controller(){
   int potValue = analogRead(A0); // Read potentiometer value
   int pwmOutput = map(potValue, 0, POTEN_MAX, 0 , 255); // Map the potentiometer value from 0 to 255
-
   float ref = pwmOutput * PWM_TO_RPS_FACTOR;
+
   //Serial.println(ref);
-  unsigned long dt = millis() - prevtime;
+  int dt = millis() - prevtime;
+
+  // send values to log
+  k_send(pMsg1, &pwmOutput);
+  k_send(pMsg2, &dt);
+
   prevtime = millis();
   // We could recieve the message here, but it's already accessible
   float vel = (float(icnt) / ENCODER_RESOLUTION) / (float(dt) / 1000); // RPS
@@ -146,11 +151,7 @@ void PID_controller(){
 
   // Convert v_hat to PWM value
   int pwm = (PID[0]*error+PID[1]*integral_e+PID[2]*de);
-  //int pwm = (PID[0]*error+PID[1]*de)/0.118;
-  /*Serial.print("pwm: ");
-  Serial.println(pwm);
-  Serial.print("error: ");
-  Serial.println(error); */
+
   set_motor_PWM(pwm);
   prev_e = error;
 }
@@ -173,14 +174,35 @@ void set_motor_PWM(int pwm){
   }
 }
 
+// Logging task
+void loggingTask() {
+  char res;
+  int pwm, dt, lost; // don't really care about this
+  while (1) {
+    // retrive the ref value to log
+    k_receive(pMsg1, &pwm, 0, &lost);
+    k_receive(pMsg2, &dt, 0, &lost);
+
+    // Send the data via the serial interface in a CSV format
+    if(dt != 0){ // Just for safety reasons
+      Serial.print("Input:");
+      Serial.print(pwm * PWM_TO_RPS_FACTOR);
+      Serial.print(",Output:");
+      Serial.println((float(icnt) / ENCODER_RESOLUTION) / (float(dt) / 1000));
+    }
+
+    // Add a delay for controlling the logging frequency (e.g., log every 100 ms)
+    k_sleep(100);
+  }
+}
 
 void setup() {
   // idk why jens does this..
   wdt_reset();
   wdt_disable();
 
-  Serial.begin(9600);
-  while (!Serial) {  }
+  Serial.begin(31250);
+  delay(200);
   
   // Setup pins
   pinMode(pot,INPUT);
@@ -188,13 +210,15 @@ void setup() {
   pinMode(Mot2,OUTPUT);
   
   // init krnl
-  k_init(2, 0, 1);
+  k_init(3, 0, 2);
   // Initiate the tasks
   pt1 = k_crt_task(taskController, 11, stak1, STK_SIZE); 
   pt2 = k_crt_task(serialReaderTask, 10, stak2, STK_SIZE); // Needs to be lower than the rest
-  
+  pt3 = k_crt_task(loggingTask, 12, stak3, STK_SIZE); // low priority logger task
+
   // Start the message
-  pMsg = k_crt_send_Q(10, 2, mar);
+  pMsg1 = k_crt_send_Q(1, sizeof(int), mar1); // reference value
+  pMsg2 = k_crt_send_Q(1, sizeof(int), mar2); // Time in between values
 
   // Initiate the ISR
   installISR();
