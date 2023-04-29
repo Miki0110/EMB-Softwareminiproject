@@ -45,7 +45,7 @@ try:
 
         # Create a timestamped file to store the data
         timestamp = time.strftime('%Y-%m-%d_%H-%M-%S')
-        file_name = f'arduino_data_{timestamp}_P{pid_values[0]}_I{pid_values[1]}_D{pid_values[2]}.csv'
+        file_name = f'arduino_data_P{pid_values[0]}_I{pid_values[1]}_D{pid_values[2]}.csv'
 
         start_time = time.time()
         while True:

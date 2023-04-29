@@ -55,9 +55,9 @@ ISR(INT0_vect, ISR_NAKED) {
 
   // If we are here the encoder has moved, so we check the direction by the second pin
   if (digitalRead(DIRECTION_PIN)) {
-    icnt++;
-  } else {
     icnt--;
+  } else {
+    icnt++;
   }
 
   K_CHG_STAK();
@@ -117,10 +117,10 @@ void serialReaderTask() {
 
 void taskController(){
   // let krnl send a signal to the semaphore every 1 ms
-  k_set_sem_timer(s1, 1);
+  k_set_sem_timer(s1, 2);
   while (1){
     // Wait sleep until next loop
-    k_wait(s1, 2);
+    k_wait(s1, 200);
     PID_controller();
     
   }
@@ -134,14 +134,14 @@ void PID_controller(){
   float ref = pwmOutput * PWM_TO_RPS_FACTOR;
 
   //Serial.println(ref);
-  long dt = micros() - prevtime;
+  unsigned long dt = micros() - prevtime;
 
   if (dt < 0) {
       // Handle rollover case
       dt += 1UL << 32;
   }
 
-  float dt_millis = float(dt) / 1e3;
+  float dt_millis = dt / 1e6;
 
   // send values to log
   k_send(pMsg1, &pwmOutput);
@@ -165,13 +165,23 @@ void PID_controller(){
   integral_e = constrain(integral_e, INTEGRAL_MIN, INTEGRAL_MAX); // stop clamping
 
   // Convert v_hat to PWM value
-  int pwm = (PID[0]*error + PID[1]*integral_e + PID[2]*de_filtered);
+  //int pwm = (PID[0]*error + PID[1]*integral_e + PID[2]*de_filtered);
   // PID controller for speed control is a bit meh so the PD controller is here as an option
-  //int pwm = (PID[0]*error + PID[2]*de_filtered);
+  int pwm = (PID[0]*error + PID[2]*de_filtered);
 
   set_motor_PWM(pwm);
   prev_e = error;
   prev_de = de_filtered;
+  
+  /* // DEBUGGING
+  Serial.print("dt ");
+  Serial.println(dt);
+  Serial.print("seconds ");
+  Serial.println(dt_millis);
+  Serial.print("error ");
+  Serial.println(error);
+  Serial.print("de_filtered ");
+  Serial.println(de_filtered);*/
 }
 
 void set_motor_PWM(int pwm){
@@ -183,11 +193,11 @@ void set_motor_PWM(int pwm){
   if(pwm > 0){
     // Set direction
     
-    digitalWrite(Mot2, HIGH);
+    digitalWrite(Mot2, LOW);
     // Send the PWM signal
     analogWrite(Mot1, pwm);       
   }else{
-    digitalWrite(Mot2, LOW);
+    digitalWrite(Mot2, HIGH);
     analogWrite(Mot1, abs(pwm));
   }
 }
@@ -229,7 +239,7 @@ void setup() {
   // init krnl
   k_init(3, 1, 2);
   // Initiate the tasks
-  pt1 = k_crt_task(taskController, 10, stak1, STK_SIZE); // Needs to be lower than the rest
+  pt1 = k_crt_task(taskController, 9, stak1, STK_SIZE); // Needs to be lower than the rest
   pt2 = k_crt_task(serialReaderTask, 11, stak2, STK_SIZE); 
   pt3 = k_crt_task(loggingTask, 12, stak3, STK_SIZE); // low priority logger task
 
