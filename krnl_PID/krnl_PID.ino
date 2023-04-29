@@ -42,8 +42,12 @@ float PID[3];
 char serialBuffer[32]; // Buffer for the serial message
 volatile uint8_t bufferIndex = 0; // This indicates current position in the buffer
 
-// Encoder interrupt task
+// ISR
+#if defined (__AVR_ATmega2560__) || defined (__AVR_ATmega1280__)
 ISR(INT4_vect, ISR_NAKED) {
+#else
+ISR(INT0_vect, ISR_NAKED) {
+#endif
   PUSHREGS();
   if (!k_running)
     goto exitt;
@@ -51,9 +55,9 @@ ISR(INT4_vect, ISR_NAKED) {
 
   // If we are here the encoder has moved, so we check the direction by the second pin
   if (digitalRead(DIRECTION_PIN)) {
-    icnt--;
-  } else {
     icnt++;
+  } else {
+    icnt--;
   }
 
   K_CHG_STAK();
@@ -116,7 +120,7 @@ void taskController(){
   k_set_sem_timer(s1, 1);
   while (1){
     // Wait sleep until next loop
-    k_wait(s1, -1);
+    k_wait(s1, 2);
     PID_controller();
     
   }
@@ -126,7 +130,7 @@ void taskController(){
 // Motor controller
 void PID_controller(){
   int potValue = analogRead(A0); // Read potentiometer value
-  int pwmOutput = map(potValue, 0, POTEN_MAX, 0 , 180); // Map the potentiometer value from 0 to 255
+  int pwmOutput = map(potValue, 0, POTEN_MAX, 0 , 180); // Map the potentiometer value from 0 to 180 - to allow for a bit more control
   float ref = pwmOutput * PWM_TO_RPS_FACTOR;
 
   //Serial.println(ref);
@@ -137,31 +141,33 @@ void PID_controller(){
       dt += 1UL << 32;
   }
 
-  float dt_seconds = float(dt) / 1e6;
+  float dt_millis = float(dt) / 1e3;
 
   // send values to log
   k_send(pMsg1, &pwmOutput);
 
   prevtime = micros();
   // We could recieve the message here, but it's already accessible
-  float vel = (float(icnt) / ENCODER_RESOLUTION) / dt_seconds; // RPS
+  float vel = (float(icnt) / ENCODER_RESOLUTION) / dt_millis; // RPmS
   icnt = 0; // Reset the encoder counter
   
   k_send(pMsg2, &vel);
   
-  float error = ref-vel;// RPS   (icnt*circum)/encResolution/(100/dt);
-  float de=(error-prev_e)/dt_seconds;
+  float error = ref-vel;// RPmS
+  float de=(error-prev_e)/dt_millis;
 
   // First order low pass
   float alpha = 0.01;
   float de_filtered = alpha * de + (1 - alpha) * prev_de;
 
  
-  integral_e += error * dt_seconds;
+  integral_e += error * dt_millis;
   integral_e = constrain(integral_e, INTEGRAL_MIN, INTEGRAL_MAX); // stop clamping
 
   // Convert v_hat to PWM value
   int pwm = (PID[0]*error + PID[1]*integral_e + PID[2]*de_filtered);
+  // PID controller for speed control is a bit meh so the PD controller is here as an option
+  //int pwm = (PID[0]*error + PID[2]*de_filtered);
 
   set_motor_PWM(pwm);
   prev_e = error;
