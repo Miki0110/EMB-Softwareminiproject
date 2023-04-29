@@ -117,7 +117,7 @@ void serialReaderTask() {
 
 void taskController(){
   // let krnl send a signal to the semaphore every 1 ms
-  k_set_sem_timer(s1, 2);
+  k_set_sem_timer(s1, 1);
   while (1){
     // Wait sleep until next loop
     k_wait(s1, 200);
