@@ -4,7 +4,7 @@ import time
 
 def write_into_file(file_name, data):
     # Open the file to store the data
-    with open(file_name, 'w') as f:
+    with open(file_name, 'a') as f:
         # Write the data to the file
         f.write(data + '\n')
 
